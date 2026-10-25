@@ -1,0 +1,42 @@
+{
+  "cards": [
+    {
+      "uid": "04 A1 B2 C3",
+      "name": "Atlas Fragment Card",
+      "itemId": "atlas_fragment_1",
+      "questTrigger": "first_atlas_page",
+      "effect": "discover_item",
+      "description": "Physical NFC card that grants the first atlas page when scanned"
+    },
+    {
+      "uid": "04 D4 E5 F6",
+      "name": "Mystery Key Card",
+      "itemId": "old_key",
+      "questTrigger": "the_old_key",
+      "effect": "discover_item",
+      "description": "Physical NFC card that grants the mysterious old key"
+    },
+    {
+      "uid": "04 G7 H8 I9",
+      "name": "Lens Card",
+      "itemId": "artifact_lens",
+      "questTrigger": null,
+      "effect": "discover_item",
+      "description": "Physical NFC card that grants the artifact lens"
+    },
+    {
+      "uid": "04 J1 K2 L3",
+      "name": "Secret Map Card",
+      "itemId": null,
+      "questTrigger": "the_forgotten_atlas",
+      "effect": "start_quest",
+      "description": "Physical NFC card that starts the Forgotten Atlas quest"
+    }
+  ],
+  "notes": [
+    "Replace UIDs with the actual UIDs of your NFC/RFID cards",
+    "UIDs are printed in the ESP32 serial output when a card is scanned",
+    "Unknown cards will be logged but will not trigger any game events",
+    "Each card can only trigger its effect once per game session to prevent duplicates"
+  ]
+}
