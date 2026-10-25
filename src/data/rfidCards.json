@@ -1,4 +1,34 @@
 {
+  "players": [
+    {
+      "uid": "04 A1 B2 C3",
+      "playerId": "explorer-01",
+      "displayName": "Explorer Mateo",
+      "role": "Master Cartographer",
+      "enabled": true
+    },
+    {
+      "uid": "04 D4 E5 F6",
+      "playerId": "explorer-02",
+      "displayName": "Adventurer Lucía",
+      "role": "Ancient Cryptographer",
+      "enabled": true
+    },
+    {
+      "uid": "04 G7 H8 I9",
+      "playerId": "explorer-03",
+      "displayName": "Historian Diego",
+      "role": "Royal Archivist",
+      "enabled": true
+    },
+    {
+      "uid": "04 J1 K2 L3",
+      "playerId": "explorer-04",
+      "displayName": "Traveler Carmen",
+      "role": "Wandering Scholar",
+      "enabled": true
+    }
+  ],
   "cards": [
     {
       "uid": "04 A1 B2 C3",
@@ -6,7 +36,7 @@
       "itemId": "atlas_fragment_1",
       "questTrigger": "first_atlas_page",
       "effect": "discover_item",
-      "description": "Physical NFC card that grants the first atlas page when scanned"
+      "description": "Physical NFC card that grants the first atlas page when scanned in gameplay"
     },
     {
       "uid": "04 D4 E5 F6",
@@ -14,7 +44,7 @@
       "itemId": "old_key",
       "questTrigger": "the_old_key",
       "effect": "discover_item",
-      "description": "Physical NFC card that grants the mysterious old key"
+      "description": "Physical NFC card that grants the mysterious old key in gameplay"
     },
     {
       "uid": "04 G7 H8 I9",
@@ -22,7 +52,7 @@
       "itemId": "artifact_lens",
       "questTrigger": null,
       "effect": "discover_item",
-      "description": "Physical NFC card that grants the artifact lens"
+      "description": "Physical NFC card that grants the artifact lens in gameplay"
     },
     {
       "uid": "04 J1 K2 L3",
@@ -30,13 +60,13 @@
       "itemId": null,
       "questTrigger": "the_forgotten_atlas",
       "effect": "start_quest",
-      "description": "Physical NFC card that starts the Forgotten Atlas quest"
+      "description": "Physical NFC card that starts the Forgotten Atlas quest in gameplay"
     }
   ],
   "notes": [
-    "Replace UIDs with the actual UIDs of your NFC/RFID cards",
-    "UIDs are printed in the ESP32 serial output when a card is scanned",
-    "Unknown cards will be logged but will not trigger any game events",
-    "Each card can only trigger its effect once per game session to prevent duplicates"
+    "UID matching is normalized: spaces, colons, hyphens are ignored and case-insensitive.",
+    "Replace UIDs with the actual UIDs of your physical NFC/RFID tags or cards.",
+    "When in Login mode, scanning an authorized UID authenticates the player profile.",
+    "When in Gameplay mode, scanning an item card grants in-game relics or triggers quests with anti-duplicate cooldown."
   ]
 }

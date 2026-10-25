@@ -13,6 +13,8 @@ export interface PauseMenuProps {
   onSettings: () => void;
   onController?: () => void;
   onNewGame: () => void;
+  onLogout?: () => void;
+  playerName?: string;
   lastSaved?: number | null;
 }
 
@@ -22,6 +24,8 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
   onSettings,
   onController,
   onNewGame,
+  onLogout,
+  playerName,
   lastSaved,
 }) => {
   const [showNewGameConfirm, setShowNewGameConfirm] = useState(false);
@@ -103,6 +107,11 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
           >
             Pausa
           </h2>
+          {playerName && (
+            <div style={{ fontSize: '0.86rem', color: THEME.colors.textGold, marginBottom: '2px', fontWeight: 600 }}>
+              👤 {playerName}
+            </div>
+          )}
           <div style={{ height: '2px', width: '100px', margin: '0 auto', background: 'linear-gradient(90deg, transparent, #d4a840, transparent)' }} />
           <span style={{ fontSize: '0.8rem', color: THEME.colors.textMuted, marginTop: '4px', display: 'block' }}>
             {formatLastSaved(lastSaved)}
@@ -179,6 +188,23 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
             >
               <span>⚔️ Nueva Aventura</span>
             </button>
+
+            {/* Logout / Switch Card */}
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                style={{
+                  ...secondaryButtonStyle,
+                  width: '100%',
+                  padding: '10px 0',
+                  borderColor: 'rgba(212, 168, 64, 0.4)',
+                  color: THEME.colors.textGold,
+                  backgroundColor: 'rgba(28, 20, 14, 0.9)',
+                }}
+              >
+                <span>💳 Cambiar Tarjeta / Cerrar Sesión</span>
+              </button>
+            )}
           </div>
         ) : (
           /* Confirmation Sub-panel */

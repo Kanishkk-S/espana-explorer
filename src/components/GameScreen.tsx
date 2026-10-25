@@ -18,6 +18,7 @@ import {
   AreaExit,
   AreaDefinition,
   GameSettings,
+  PlayerProfile,
 } from '@/types/game';
 
 import { GameEngine } from '@/game/engine/GameEngine';
@@ -41,6 +42,7 @@ import Notification from './Notification';
 import PuzzlePanel from './PuzzlePanel';
 import ControllerModal from './ControllerModal';
 import SettingsModal from './SettingsModal';
+import RfidLoginScreen from './RfidLoginScreen';
 import { THEME } from './uiTheme';
 
 // Build indexed areas map from Madrid areas
@@ -56,8 +58,12 @@ export const GameScreen: React.FC = () => {
   const engineRef = useRef<GameEngine | null>(null);
   const controllerRef = useRef<ControllerManager>(new ControllerManager());
 
-  // Scene & Overlay States
-  const [scene, setScene] = useState<'main_menu' | 'gameplay'>('main_menu');
+  // Player Profile & Scene States
+  const [activePlayer, setActivePlayer] = useState<PlayerProfile | null>(null);
+  const activePlayerRef = useRef<PlayerProfile | null>(null);
+  activePlayerRef.current = activePlayer;
+
+  const [scene, setScene] = useState<'rfid_login' | 'main_menu' | 'gameplay'>('rfid_login');
   const [hasSave, setHasSave] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [showInventory, setShowInventory] = useState<boolean>(false);
@@ -105,7 +111,26 @@ export const GameScreen: React.FC = () => {
     else if (type === 'achievement' || type === 'quest') sound.playQuestComplete();
   }, []);
 
-  // Handle Controller Events
+  // Cleanup Controller only on component unmount
+  useEffect(() => {
+    const controller = controllerRef.current;
+    return () => {
+      controller.destroy();
+    };
+  }, []);
+
+  // Periodic Auto-Save during active gameplay
+  useEffect(() => {
+    if (scene !== 'gameplay') return;
+    const interval = setInterval(() => {
+      if (activePlayerRef.current) {
+        saveGame(gameStateRef.current, activePlayerRef.current.playerId);
+      }
+    }, 45000); // Auto-save every 45s
+    return () => clearInterval(interval);
+  }, [scene]);
+
+  // Handle Controller Events (Buttons, Joystick, RFID)
   useEffect(() => {
     const controller = controllerRef.current;
     const unsub = controller.onEvent((event) => {
@@ -139,32 +164,69 @@ export const GameScreen: React.FC = () => {
           else setIsPaused((prev) => !prev);
         }
       } else if (event.type === 'rfid' && event.uid) {
-        // RFID card scan
-        sound.playItemPickup();
+        // In login mode, RFID authentication is managed by RfidLoginScreen
+        if (controller.getMode() === 'login') {
+          return;
+        }
+
+        // In gameplay mode, ignore card if still in login cooldown
+        if (controller.isInLoginCooldown()) {
+          return;
+        }
+
         const mapping = controller.lookupRfidCard(event.uid);
         if (mapping && mapping.itemId) {
+          sound.playItemPickup();
           const itemDef = ITEM_DEFINITIONS[mapping.itemId];
           if (itemDef) {
             const newItem = createItem(mapping.itemId, 1);
             setGameState((prev) => {
               const alreadyHas = prev.inventory.some((i) => i.id === newItem.id);
-              if (alreadyHas) return prev;
-              return {
+              if (alreadyHas) {
+                triggerNotification(`Ya posees la reliquia: ${itemDef.name}`, 'info', 'Tarjeta RFID');
+                return prev;
+              }
+              const next = {
                 ...prev,
                 inventory: [...prev.inventory, newItem],
               };
+              if (activePlayerRef.current) {
+                saveGame(next, activePlayerRef.current.playerId);
+              }
+              return next;
             });
-            triggerNotification(`Tarjeta RFID Escaneada: Has recibido ${itemDef.name}!`, 'item', 'Tarjeta Mágica');
+            triggerNotification(`¡Reliquia Descubierta: ${itemDef.name}!`, 'item', 'Tarjeta Mágica RFID');
+            controller.displayText('ITEM DESCUBIERTO', itemDef.name.substring(0, 16));
+            controller.buzz(100, 1600);
           }
+        } else if (mapping && mapping.questTrigger) {
+          sound.playQuestComplete();
+          const qId = mapping.questTrigger;
+          setGameState((prev) => {
+            const q = prev.quests[qId];
+            if (q && q.status === 'available') {
+              const next: GameState = {
+                ...prev,
+                quests: { ...prev.quests, [qId]: { ...q, status: 'active' as const } },
+              };
+              if (activePlayerRef.current) {
+                saveGame(next, activePlayerRef.current.playerId);
+              }
+              return next;
+            }
+            return prev;
+          });
+          triggerNotification(`Misión activada por tarjeta: ${mapping.name}`, 'quest', 'Misterio Revelado');
+          controller.displayText('NUEVA MISION', mapping.name.substring(0, 16));
+          controller.buzz(120, 1400);
         } else {
-          triggerNotification(`Tarjeta RFID detectada: [${event.uid}]`, 'info', 'Lector RFID');
+          triggerNotification(`Tarjeta detectada: [${event.uid}]`, 'info', 'Lector RFID');
         }
       }
     });
 
     return () => {
       unsub();
-      controller.destroy();
     };
   }, [triggerNotification, activeDialogue, activePuzzle, showInventory, showJournal, showQuestLog, showMap]);
 
@@ -499,10 +561,43 @@ export const GameScreen: React.FC = () => {
     showSettingsModal,
   ]);
 
+  // RFID Login & Session Handlers
+  const handleLoginSuccess = (player: PlayerProfile) => {
+    setActivePlayer(player);
+    const saved = loadGame(player.playerId);
+    if (saved) {
+      setGameState(saved);
+      triggerNotification(`¡Bienvenido de vuelta, ${player.displayName}!`, 'achievement', 'Sesión Iniciada');
+    } else {
+      const fresh = createInitialGameState();
+      fresh.player.id = player.playerId;
+      fresh.player.name = player.displayName;
+      setGameState(fresh);
+      saveGame(fresh, player.playerId);
+      triggerNotification(`¡Comienza tu aventura, ${player.displayName}!`, 'achievement', 'Nuevo Explorador');
+    }
+    setHasSave(true);
+    controllerRef.current.setMode('gameplay');
+    setScene('gameplay');
+  };
+
+  const handleLogout = () => {
+    sound.playClick();
+    if (activePlayerRef.current) {
+      saveGame(gameStateRef.current, activePlayerRef.current.playerId);
+    }
+    setIsPaused(false);
+    setActivePlayer(null);
+    controllerRef.current.setMode('login');
+    setScene('rfid_login');
+    triggerNotification('Sesión cerrada. Escanea una tarjeta para continuar.', 'info', 'Hasta Pronto');
+  };
+
   // Main Menu Handlers
   const handleStartContinue = () => {
     sound.playClick();
-    const saved = loadGame();
+    const playerId = activePlayerRef.current?.playerId;
+    const saved = loadGame(playerId);
     if (saved) {
       setGameState(saved);
       triggerNotification('Partida cargada exitosamente.', 'info', 'Bienvenido de Vuelta');
@@ -512,9 +607,15 @@ export const GameScreen: React.FC = () => {
 
   const handleStartNewGame = () => {
     sound.playClick();
+    const playerId = activePlayerRef.current?.playerId;
+    const playerName = activePlayerRef.current?.displayName || 'Explorador';
     const fresh = createInitialGameState();
+    if (playerId) {
+      fresh.player.id = playerId;
+      fresh.player.name = playerName;
+    }
     setGameState(fresh);
-    saveGame(fresh);
+    saveGame(fresh, playerId);
     setHasSave(true);
     setScene('gameplay');
     triggerNotification('¡Comienza tu viaje en la Plaza de la Llegada!', 'quest', 'Nueva Aventura');
@@ -522,7 +623,8 @@ export const GameScreen: React.FC = () => {
 
   const handleSaveGame = () => {
     sound.playClick();
-    const success = saveGame(gameState);
+    const playerId = activePlayerRef.current?.playerId;
+    const success = saveGame(gameState, playerId);
     if (success) {
       setGameState((prev) => ({ ...prev, lastSaved: Date.now() }));
       setHasSave(true);
@@ -531,8 +633,13 @@ export const GameScreen: React.FC = () => {
   };
 
   const handleResetSave = () => {
-    deleteSave();
+    const playerId = activePlayerRef.current?.playerId;
+    deleteSave(playerId);
     const fresh = createInitialGameState();
+    if (playerId) {
+      fresh.player.id = playerId;
+      fresh.player.name = activePlayerRef.current?.displayName || 'Explorador';
+    }
     setGameState(fresh);
     setHasSave(false);
     setShowSettingsModal(false);
@@ -553,7 +660,7 @@ export const GameScreen: React.FC = () => {
             if (q && q.status === 'available') {
               return {
                 ...prev,
-                quests: { ...prev.quests, [qId]: { ...q, status: 'active' } },
+                quests: { ...prev.quests, [qId]: { ...q, status: 'active' as const } },
               };
             }
             return prev;
@@ -735,39 +842,46 @@ export const GameScreen: React.FC = () => {
         userSelect: 'none',
       }}
     >
-      {/* 88-90% Viewport Game Frame (Lost Legends Style) */}
-      <div
-        ref={containerRef}
-        style={{
-          width: '90vw',
-          maxWidth: '1440px',
-          height: '88vh',
-          maxHeight: '900px',
-          backgroundColor: '#2a2218',
-          borderRadius: '26px',
-          border: '3px solid #140e06',
-          boxShadow: '0 25px 70px rgba(0, 0, 0, 0.88), 0 0 35px rgba(212, 168, 64, 0.15)',
-          position: 'relative',
-          overflow: 'hidden',
-          display: 'flex',
-        }}
-      >
-        {/* Main Menu Scene Overlay */}
-        {scene === 'main_menu' && (
-          <MainMenu
-            hasSave={hasSave}
-            onContinue={handleStartContinue}
-            onNewGame={handleStartNewGame}
-            onSettings={() => {
-              sound.playClick();
-              setShowSettingsModal(true);
-            }}
-            onController={() => {
-              sound.playClick();
-              setShowControllerModal(true);
-            }}
-          />
-        )}
+      {/* Full-Screen RFID Authentication Login Scene */}
+      {scene === 'rfid_login' ? (
+        <RfidLoginScreen
+          controller={controllerRef.current}
+          onLoginSuccess={handleLoginSuccess}
+        />
+      ) : (
+        /* 88-90% Viewport Game Frame (Lost Legends Style) */
+        <div
+          ref={containerRef}
+          style={{
+            width: '90vw',
+            maxWidth: '1440px',
+            height: '88vh',
+            maxHeight: '900px',
+            backgroundColor: '#2a2218',
+            borderRadius: '26px',
+            border: '3px solid #140e06',
+            boxShadow: '0 25px 70px rgba(0, 0, 0, 0.88), 0 0 35px rgba(212, 168, 64, 0.15)',
+            position: 'relative',
+            overflow: 'hidden',
+            display: 'flex',
+          }}
+        >
+          {/* Main Menu Scene Overlay */}
+          {scene === 'main_menu' && (
+            <MainMenu
+              hasSave={hasSave}
+              onContinue={handleStartContinue}
+              onNewGame={handleStartNewGame}
+              onSettings={() => {
+                sound.playClick();
+                setShowSettingsModal(true);
+              }}
+              onController={() => {
+                sound.playClick();
+                setShowControllerModal(true);
+              }}
+            />
+          )}
 
         {/* 2D Game Rendering Canvas */}
         <canvas
@@ -953,6 +1067,7 @@ export const GameScreen: React.FC = () => {
             {isPaused && (
               <PauseMenu
                 lastSaved={gameState.lastSaved}
+                playerName={activePlayer?.displayName}
                 onResume={() => {
                   sound.playClick();
                   setIsPaused(false);
@@ -971,6 +1086,7 @@ export const GameScreen: React.FC = () => {
                   setIsPaused(false);
                   handleStartNewGame();
                 }}
+                onLogout={handleLogout}
               />
             )}
 
@@ -1011,7 +1127,8 @@ export const GameScreen: React.FC = () => {
             )}
           </>
         )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };

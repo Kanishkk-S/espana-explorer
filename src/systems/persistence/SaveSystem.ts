@@ -5,8 +5,12 @@
 
 import { GameState, SaveData, GameSettings } from '@/types/game';
 
-const SAVE_KEY = 'espana_explorer_save';
+const LEGACY_SAVE_KEY = 'espana_explorer_save';
 const SAVE_VERSION = 1;
+
+export function getSaveKey(playerId?: string): string {
+  return playerId ? `espana_explorer_save_${playerId}` : 'espana_explorer_save_default';
+}
 
 function generateChecksum(data: string): string {
   let hash = 0;
@@ -18,8 +22,9 @@ function generateChecksum(data: string): string {
   return Math.abs(hash).toString(36);
 }
 
-export function saveGame(state: GameState): boolean {
+export function saveGame(state: GameState, playerId?: string): boolean {
   try {
+    const key = getSaveKey(playerId || state.player?.id);
     const stateToSave: GameState = {
       ...state,
       lastSaved: Date.now(),
@@ -34,7 +39,8 @@ export function saveGame(state: GameState): boolean {
       checksum: generateChecksum(stateJson),
     };
 
-    localStorage.setItem(SAVE_KEY, JSON.stringify(saveData));
+    localStorage.setItem(key, JSON.stringify(saveData));
+    localStorage.setItem(LEGACY_SAVE_KEY, JSON.stringify(saveData));
     return true;
   } catch (error) {
     console.error('Failed to save game:', error);
@@ -42,9 +48,13 @@ export function saveGame(state: GameState): boolean {
   }
 }
 
-export function loadGame(): GameState | null {
+export function loadGame(playerId?: string): GameState | null {
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    const key = getSaveKey(playerId);
+    let raw = localStorage.getItem(key);
+    if (!raw && (!playerId || playerId === 'default')) {
+      raw = localStorage.getItem(LEGACY_SAVE_KEY);
+    }
     if (!raw) return null;
 
     const saveData: SaveData = JSON.parse(raw);
@@ -71,24 +81,36 @@ export function loadGame(): GameState | null {
   }
 }
 
-export function hasSaveData(): boolean {
+export function hasSaveData(playerId?: string): boolean {
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    const key = getSaveKey(playerId);
+    let raw = localStorage.getItem(key);
+    if (!raw && (!playerId || playerId === 'default')) {
+      raw = localStorage.getItem(LEGACY_SAVE_KEY);
+    }
     if (!raw) return false;
     const parsed = JSON.parse(raw);
-    return parsed && parsed.gameState && parsed.gameState.player;
+    return Boolean(parsed && parsed.gameState && parsed.gameState.player);
   } catch {
     return false;
   }
 }
 
-export function deleteSave(): void {
-  localStorage.removeItem(SAVE_KEY);
+export function deleteSave(playerId?: string): void {
+  const key = getSaveKey(playerId);
+  localStorage.removeItem(key);
+  if (!playerId || playerId === 'default') {
+    localStorage.removeItem(LEGACY_SAVE_KEY);
+  }
 }
 
-export function getLastSaveTime(): number | null {
+export function getLastSaveTime(playerId?: string): number | null {
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    const key = getSaveKey(playerId);
+    let raw = localStorage.getItem(key);
+    if (!raw && (!playerId || playerId === 'default')) {
+      raw = localStorage.getItem(LEGACY_SAVE_KEY);
+    }
     if (!raw) return null;
     const saveData: SaveData = JSON.parse(raw);
     return saveData.timestamp;
@@ -169,17 +191,24 @@ export class AutoSaveManager {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private getState: () => GameState;
   private onSave: (success: boolean) => void;
+  private getPlayerId?: () => string | undefined;
 
-  constructor(getState: () => GameState, onSave: (success: boolean) => void) {
+  constructor(
+    getState: () => GameState,
+    onSave: (success: boolean) => void,
+    getPlayerId?: () => string | undefined
+  ) {
     this.getState = getState;
     this.onSave = onSave;
+    this.getPlayerId = getPlayerId;
   }
 
   start(intervalMs: number = 60000) {
     this.stop();
     this.intervalId = setInterval(() => {
       const state = this.getState();
-      const success = saveGame(state);
+      const playerId = this.getPlayerId?.() || state.player?.id;
+      const success = saveGame(state, playerId);
       this.onSave(success);
     }, intervalMs);
   }
@@ -193,7 +222,8 @@ export class AutoSaveManager {
 
   saveNow() {
     const state = this.getState();
-    const success = saveGame(state);
+    const playerId = this.getPlayerId?.() || state.player?.id;
+    const success = saveGame(state, playerId);
     this.onSave(success);
     return success;
   }

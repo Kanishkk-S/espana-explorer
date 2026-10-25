@@ -409,6 +409,15 @@ export interface RFIDCardMapping {
   effect: string;
 }
 
+export interface PlayerProfile {
+  uid: string;
+  playerId: string;
+  displayName: string;
+  enabled: boolean;
+  avatar?: string;
+  role?: string;
+}
+
 // --- Camera ---
 export interface Camera {
   x: number;
@@ -422,7 +431,7 @@ export interface Camera {
 }
 
 // --- Scene Management ---
-export type SceneType = 'main_menu' | 'gameplay' | 'world_map' | 'inventory' | 'journal' | 'quest_log' | 'puzzle' | 'settings' | 'controller_setup';
+export type SceneType = 'rfid_login' | 'main_menu' | 'gameplay' | 'world_map' | 'inventory' | 'journal' | 'quest_log' | 'puzzle' | 'settings' | 'controller_setup';
 
 export interface GameContext {
   state: GameState;

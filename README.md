@@ -98,6 +98,45 @@ public/
   assets/         # Static assets
 ```
 
+## 💳 RFID Login & Player Profile System
+
+España Explorer features physical NFC/RFID card authentication powered by the Web Serial API and an RC522 reader on the ESP32.
+
+### Login Flow:
+1. When opening the game, a full-screen illustrated **RFID Login Portal** appears.
+2. Connect your ESP32 controller via the **Conectar Mando** button (Web Serial API at 115200 baud).
+3. Scan your physical NFC/RFID card on the RC522 scanner.
+4. If the card UID matches a registered profile in `src/data/rfidCards.json`, the explorer is authenticated:
+   - Plays a medieval welcome chime
+   - Displays player name & role badge on the screen and on the ESP32 TFT
+   - Loads the player's personal saved progress (namespaced by `playerId`)
+   - Seamlessly enters gameplay at their saved location and city
+5. If the card is unknown or unauthorized, a clear alert is shown and access remains locked.
+6. A built-in **Simulador de Tarjetas** test panel allows testing registered explorer UIDs directly in the browser even without hardware.
+
+### Adding New Explorer Profiles:
+Edit `src/data/rfidCards.json` under `"players"`:
+```json
+{
+  "players": [
+    {
+      "uid": "04 A1 B2 C3",
+      "playerId": "explorer-01",
+      "displayName": "Explorer Mateo",
+      "role": "Master Cartographer",
+      "enabled": true
+    }
+  ]
+}
+```
+> **UID Normalization:** UID matching is case-insensitive and ignores spaces, colons, and hyphens (`04:A1:B2:C3`, `04 A1 B2 C3`, and `04A1B2C3` all match).
+
+### Controller Modes & Cooldown:
+- **Login Mode:** Scanning an authorized card authenticates the player profile.
+- **Gameplay Mode:** Scanning cards grants in-game relics or initiates quests.
+- **Mode Separation:** A cooldown prevents the card scanned during login from accidentally granting in-game item rewards upon entering the world.
+- **Logout:** In the Pause Menu ([ESC] or BACK button), click **Cambiar Tarjeta / Cerrar Sesión** to safely save and return to the login portal.
+
 ## 🎮 ESP32 Controller Setup
 
 ### Hardware Requirements
@@ -105,7 +144,7 @@ public/
 - 1.8" SPI TFT display (ST7735)
 - RC522 RFID reader
 - MPU6050 accelerometer
-- KY-023 joystick
+- KY-023 joystick (sideways mounting corrected in software)
 - 4 buttons (SELECT, BACK, MAP, JOURNAL)
 - 2 LEDs (Green, Red)
 - Buzzer
@@ -141,15 +180,15 @@ public/
 ### Firmware Upload
 1. Open `firmware/espana_explorer_controller.ino` in Arduino IDE
 2. Select "ESP32 Dev Module" as board
-3. Install required libraries via Library Manager
+3. Install required libraries via Library Manager (Adafruit GFX, Adafruit ST7735, MFRC522, ArduinoJson)
 4. Upload to ESP32
-5. Open Serial Monitor at 115200 baud to verify output
+5. Open Serial Monitor at 115200 baud to verify startup handshake
 
 ### Connecting to Game
 1. Connect ESP32 via USB
-2. In the game, click the controller icon or press Ctrl+Shift+C
+2. On the RFID Login screen, click **Conectar Mando**
 3. Select the ESP32 serial port in the browser dialog
-4. Controller events should appear in the diagnostics panel
+4. Once connected, the green indicator activates and the controller TFT displays ready status
 
 ### RFID Card Configuration
 Edit `src/data/rfidCards.json` to map your NFC card UIDs to game items.

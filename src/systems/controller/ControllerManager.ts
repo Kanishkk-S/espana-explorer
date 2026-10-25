@@ -3,16 +3,18 @@
 // Web Serial API communication with the ESP32 hardware controller
 // ============================================================
 
-import { ControllerEvent, RFIDCardMapping } from '@/types/game';
+import { ControllerEvent, RFIDCardMapping, PlayerProfile } from '@/types/game';
+import rfidCardsConfig from '@/data/rfidCards.json';
 
-// RFID card mapping configuration
-export const RFID_CARD_MAPPINGS: RFIDCardMapping[] = [
-  // Add known card UIDs here
-  // Example:
-  // { uid: '04 A1 B2 C3', name: 'Atlas Fragment Card', itemId: 'atlas_fragment_1', effect: 'discover_item' },
-  // { uid: '04 D4 E5 F6', name: 'Mystery Key Card', itemId: 'old_key', effect: 'discover_item' },
-];
+// Utility to normalize RFID UIDs (strips spaces, colons, hyphens and converts to uppercase)
+export function normalizeUID(uid: string): string {
+  if (!uid) return '';
+  return uid.replace(/[\s:-]/g, '').toUpperCase();
+}
 
+export const RFID_CARD_MAPPINGS: RFIDCardMapping[] = (rfidCardsConfig.cards || []) as RFIDCardMapping[];
+
+export type ControllerMode = 'login' | 'gameplay';
 export type ControllerCallback = (event: ControllerEvent) => void;
 
 export class ControllerManager {
@@ -23,24 +25,82 @@ export class ControllerManager {
   private isConnected: boolean = false;
   private isReading: boolean = false;
   private callbacks: Set<ControllerCallback> = new Set();
+  private disconnectListeners: Set<() => void> = new Set();
+  private connectListeners: Set<() => void> = new Set();
   private buffer: string = '';
   private processedRfids: Set<string> = new Set(); // Prevent duplicate RFID events
   private rfidCooldown: number = 0;
   private lastJoystickEmit: number = 0;
-  private readonly JOYSTICK_EMIT_INTERVAL = 50; // ms
-  private readonly RFID_COOLDOWN_MS = 3000;
+  private readonly JOYSTICK_EMIT_INTERVAL = 40; // ms
+  private readonly RFID_COOLDOWN_MS = 2500;
   private messageLog: string[] = [];
   private readonly MAX_LOG_SIZE = 100;
+  private mode: ControllerMode = 'login';
+  private loginCooldownUntil: number = 0;
+  private boundDisconnectListener: ((e: Event) => void) | null = null;
+
+  constructor() {
+    // Listen for OS USB disconnection
+    if (typeof navigator !== 'undefined' && 'serial' in navigator) {
+      this.boundDisconnectListener = (event: Event) => {
+        // SerialPort disconnect event
+        const targetPort = (event as { port?: SerialPort }).port;
+        if (targetPort && this.port && targetPort === this.port) {
+          this.log('USB controller unplugged by system.');
+          this.handlePortDisconnect();
+        }
+      };
+      (navigator.serial as unknown as EventTarget).addEventListener('disconnect', this.boundDisconnectListener as EventListener);
+    }
+  }
 
   // Check if Web Serial is supported
   static isSupported(): boolean {
-    return 'serial' in navigator;
+    return typeof navigator !== 'undefined' && 'serial' in navigator;
   }
 
   // Register event callback
   onEvent(callback: ControllerCallback): () => void {
     this.callbacks.add(callback);
     return () => this.callbacks.delete(callback);
+  }
+
+  // Register connection lifecycle listeners
+  onDisconnect(cb: () => void): () => void {
+    this.disconnectListeners.add(cb);
+    return () => this.disconnectListeners.delete(cb);
+  }
+
+  onConnect(cb: () => void): () => void {
+    this.connectListeners.add(cb);
+    return () => this.connectListeners.delete(cb);
+  }
+
+  // Mode management
+  getMode(): ControllerMode {
+    return this.mode;
+  }
+
+  setMode(mode: ControllerMode): void {
+    this.mode = mode;
+    this.log(`Controller mode changed: ${mode}`);
+    if (this.isConnected) {
+      if (mode === 'gameplay') {
+        this.displayText('ESPANA EXPLORER', 'Modo Juego Activo');
+        this.setLED('green', true);
+      } else {
+        this.displayText('ESPANA EXPLORER', 'Escanea Tarjeta');
+        this.setLED('green', false);
+      }
+    }
+  }
+
+  triggerLoginCooldown(durationMs: number = 3000): void {
+    this.loginCooldownUntil = Date.now() + durationMs;
+  }
+
+  isInLoginCooldown(): boolean {
+    return Date.now() < this.loginCooldownUntil;
   }
 
   // Connect to controller
@@ -51,6 +111,11 @@ export class ControllerManager {
     }
 
     try {
+      // Close any previous port cleanly
+      if (this.isConnected || this.port) {
+        await this.disconnect();
+      }
+
       // Request port from user
       this.port = await navigator.serial.requestPort({
         filters: [
@@ -58,17 +123,29 @@ export class ControllerManager {
           { usbVendorId: 0x10C4 }, // CP210x
           { usbVendorId: 0x1A86 }, // CH340
           { usbVendorId: 0x0403 }, // FTDI
-          { usbVendorId: 0x303A }, // Espressif
+          { usbVendorId: 0x303A }, // Espressif native USB / ESP32-S2/S3/C3
         ],
       });
 
       await this.port.open({ baudRate: 115200 });
       
       this.isConnected = true;
-      this.log('Connected to ESP32 controller');
+      this.log('Connected to ESP32 controller (115200 baud)');
 
-      // Set up reading
+      // Set up reading loop
       this.startReading();
+
+      // Send initial handshake
+      setTimeout(() => {
+        if (this.isConnected) {
+          this.displayText('ESPANA EXPLORER', this.mode === 'login' ? 'Escanea Tarjeta' : 'Explorador Activo');
+          this.buzz(100, 1500);
+        }
+      }, 300);
+
+      this.connectListeners.forEach(cb => {
+        try { cb(); } catch (e) { console.error(e); }
+      });
 
       return true;
     } catch (error) {
@@ -102,8 +179,17 @@ export class ControllerManager {
       console.error('Error during disconnect:', error);
     }
 
-    this.isConnected = false;
-    this.log('Disconnected from controller');
+    this.handlePortDisconnect();
+  }
+
+  private handlePortDisconnect(): void {
+    if (this.isConnected) {
+      this.isConnected = false;
+      this.log('Disconnected from controller');
+      this.disconnectListeners.forEach(cb => {
+        try { cb(); } catch (e) { console.error(e); }
+      });
+    }
   }
 
   // Send message to controller
@@ -145,10 +231,11 @@ export class ControllerManager {
   }
 
   // Get connection status
-  getStatus(): { connected: boolean; port: string | null } {
+  getStatus(): { connected: boolean; port: string | null; mode: ControllerMode } {
     return {
       connected: this.isConnected,
-      port: this.port ? 'USB Serial' : null,
+      port: this.port ? 'USB Serial (115200)' : null,
+      mode: this.mode,
     };
   }
 
@@ -157,14 +244,33 @@ export class ControllerManager {
     return [...this.messageLog];
   }
 
-  // Clear processed RFIDs (for new game)
+  // Clear processed RFIDs
   clearProcessedRfids(): void {
     this.processedRfids.clear();
   }
 
-  // Look up RFID card
+  // Look up registered player by RFID UID
+  lookupPlayerByRfid(uid: string): PlayerProfile | undefined {
+    if (!uid) return undefined;
+    const norm = normalizeUID(uid);
+    const players: PlayerProfile[] = (rfidCardsConfig.players || []) as PlayerProfile[];
+    return players.find(p => p.enabled && normalizeUID(p.uid) === norm);
+  }
+
+  // Look up gameplay RFID card mapping
   lookupRfidCard(uid: string): RFIDCardMapping | undefined {
-    return RFID_CARD_MAPPINGS.find(card => card.uid === uid);
+    if (!uid) return undefined;
+    const norm = normalizeUID(uid);
+    const cards: RFIDCardMapping[] = (rfidCardsConfig.cards || []) as RFIDCardMapping[];
+    return cards.find(card => normalizeUID(card.uid) === norm);
+  }
+
+  getAllRegisteredPlayers(): PlayerProfile[] {
+    return (rfidCardsConfig.players || []) as PlayerProfile[];
+  }
+
+  getAllItemCards(): RFIDCardMapping[] {
+    return (rfidCardsConfig.cards || []) as RFIDCardMapping[];
   }
 
   // --- Private Methods ---
@@ -182,6 +288,7 @@ export class ControllerManager {
       if (this.isReading) {
         console.error('Read error:', err);
         this.log(`Read error: ${err}`);
+        this.handlePortDisconnect();
       }
     });
 
@@ -189,7 +296,7 @@ export class ControllerManager {
     readableStream.catch((err: unknown) => {
       if (this.isReading) {
         console.error('Stream error:', err);
-        this.isConnected = false;
+        this.handlePortDisconnect();
       }
     });
   }
@@ -206,6 +313,7 @@ export class ControllerManager {
       } catch (error) {
         if (this.isReading) {
           console.error('Read error:', error);
+          this.handlePortDisconnect();
         }
         break;
       }
@@ -236,11 +344,12 @@ export class ControllerManager {
 
     // Filter duplicate/rapid RFID events
     if (event.type === 'rfid' && event.uid) {
+      const norm = normalizeUID(event.uid);
       if (now - this.rfidCooldown < this.RFID_COOLDOWN_MS) {
         return; // Cooldown active
       }
       this.rfidCooldown = now;
-      this.log(`RFID: ${event.uid}`);
+      this.log(`RFID scanned: ${event.uid} (Norm: ${norm})`);
     }
 
     // Throttle joystick events
@@ -251,12 +360,12 @@ export class ControllerManager {
       this.lastJoystickEmit = now;
     }
 
-    // Log the event
+    // Log non-joystick events
     if (event.type !== 'joystick') {
       this.log(`Event: ${JSON.stringify(event)}`);
     }
 
-    // Dispatch to callbacks
+    // Dispatch to registered callbacks
     this.callbacks.forEach(callback => {
       try {
         callback(event);
@@ -276,8 +385,14 @@ export class ControllerManager {
 
   // Cleanup
   destroy(): void {
+    if (this.boundDisconnectListener && typeof navigator !== 'undefined' && 'serial' in navigator) {
+      (navigator.serial as unknown as EventTarget).removeEventListener('disconnect', this.boundDisconnectListener as EventListener);
+      this.boundDisconnectListener = null;
+    }
     this.disconnect();
     this.callbacks.clear();
+    this.disconnectListeners.clear();
+    this.connectListeners.clear();
   }
 }
 
