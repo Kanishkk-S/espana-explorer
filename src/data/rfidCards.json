@@ -1,6 +1,13 @@
 {
   "players": [
     {
+      "uid": "F7 10 A3 85",
+      "playerId": "explorer-kanishkk",
+      "displayName": "Kanishkk",
+      "role": "Master Explorer",
+      "enabled": true
+    },
+    {
       "uid": "04 A1 B2 C3",
       "playerId": "explorer-01",
       "displayName": "Explorer Mateo",
@@ -30,6 +37,14 @@
     }
   ],
   "cards": [
+    {
+      "uid": "F7 10 A3 85",
+      "name": "Kanishkk's Explorer Card",
+      "itemId": "ancient_seal",
+      "questTrigger": "first_atlas_page",
+      "effect": "discover_item",
+      "description": "Physical NFC card for Explorer Kanishkk that grants the Forgotten Imperial Seal in gameplay"
+    },
     {
       "uid": "04 A1 B2 C3",
       "name": "Atlas Fragment Card",

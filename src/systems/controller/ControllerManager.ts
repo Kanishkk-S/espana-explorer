@@ -6,10 +6,14 @@
 import { ControllerEvent, RFIDCardMapping, PlayerProfile } from '@/types/game';
 import rfidCardsConfig from '@/data/rfidCards.json';
 
-// Utility to normalize RFID UIDs (strips spaces, colons, hyphens and converts to uppercase)
+// Utility to normalize RFID UIDs (strips spaces, colons, hyphens, prefixes, and converts to uppercase)
 export function normalizeUID(uid: string): string {
   if (!uid) return '';
-  return uid.replace(/[\s:-]/g, '').toUpperCase();
+  return String(uid)
+    .trim()
+    .replace(/\b0x/gi, '')
+    .replace(/[^0-9A-Fa-f]/g, '')
+    .toUpperCase();
 }
 
 export const RFID_CARD_MAPPINGS: RFIDCardMapping[] = (rfidCardsConfig.cards || []) as RFIDCardMapping[];
