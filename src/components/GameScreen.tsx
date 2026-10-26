@@ -161,7 +161,12 @@ export const GameScreen: React.FC = () => {
           else if (showJournal) setShowJournal(false);
           else if (showQuestLog) setShowQuestLog(false);
           else if (showMap) setShowMap(false);
-          else setIsPaused((prev) => !prev);
+          else if (showControllerModal) setShowControllerModal(false);
+          else if (showSettingsModal) setShowSettingsModal(false);
+          else if (isPaused) setIsPaused(false);
+        } else if (event.name === 'JOY_BTN' || event.name === 'JOY_SW') {
+          sound.playClick();
+          setIsPaused((prev) => !prev);
         }
       } else if (event.type === 'rfid' && event.uid) {
         // In login mode, RFID authentication is managed by RfidLoginScreen
@@ -228,7 +233,18 @@ export const GameScreen: React.FC = () => {
     return () => {
       unsub();
     };
-  }, [triggerNotification, activeDialogue, activePuzzle, showInventory, showJournal, showQuestLog, showMap]);
+  }, [
+    triggerNotification,
+    activeDialogue,
+    activePuzzle,
+    showInventory,
+    showJournal,
+    showQuestLog,
+    showMap,
+    showControllerModal,
+    showSettingsModal,
+    isPaused,
+  ]);
 
   // Initialize GameEngine when entering gameplay scene
   useEffect(() => {

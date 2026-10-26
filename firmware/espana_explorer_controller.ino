@@ -50,7 +50,7 @@
 #define SERIAL_BAUD       115200
 #define JOYSTICK_DEADZONE 300
 #define JOYSTICK_CENTER   2048
-#define JOYSTICK_SEND_MS  100
+#define JOYSTICK_SEND_MS  50
 #define BUTTON_DEBOUNCE   50
 #define SHAKE_THRESHOLD   15000
 #define SHAKE_COOLDOWN    2000
@@ -87,9 +87,14 @@ ButtonState buttons[] = {
 };
 const int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
 
-// Joystick
+// Joystick state & calibrated neutral centers
 int joyX = JOYSTICK_CENTER;
 int joyY = JOYSTICK_CENTER;
+int centerRawX = JOYSTICK_CENTER;
+int centerRawY = JOYSTICK_CENTER;
+float filteredRawX = (float)JOYSTICK_CENTER;
+float filteredRawY = (float)JOYSTICK_CENTER;
+bool joystickAtCenter = true;
 unsigned long lastJoystickSend = 0;
 
 // MPU6050
@@ -114,6 +119,30 @@ int displayPage = 0;
 // LED states
 bool greenLedState = false;
 bool redLedState = false;
+
+// =========================
+// JOYSTICK CALIBRATION
+// =========================
+
+void calibrateJoystick() {
+  long sumX = 0;
+  long sumY = 0;
+  const int CAL_SAMPLES = 64;
+  for (int i = 0; i < CAL_SAMPLES; i++) {
+    sumX += analogRead(JOY_X_PIN);
+    sumY += analogRead(JOY_Y_PIN);
+    delay(5);
+  }
+  centerRawX = sumX / CAL_SAMPLES;
+  centerRawY = sumY / CAL_SAMPLES;
+
+  // Guard against extreme floating readings
+  if (centerRawX < 400 || centerRawX > 3700) centerRawX = JOYSTICK_CENTER;
+  if (centerRawY < 400 || centerRawY > 3700) centerRawY = JOYSTICK_CENTER;
+
+  filteredRawX = (float)centerRawX;
+  filteredRawY = (float)centerRawY;
+}
 
 // =========================
 // SETUP
@@ -151,6 +180,9 @@ void setup() {
   // Show splash screen
   showSplashScreen();
   
+  // Calibrate neutral joystick readings (auto-zero while untouched)
+  calibrateJoystick();
+
   // Initialize RFID
   rfid.PCD_Init();
   delay(100);
@@ -259,26 +291,64 @@ void readJoystick(unsigned long now) {
   int rawX = analogRead(JOY_X_PIN);
   int rawY = analogRead(JOY_Y_PIN);
   
-  // Correct for sideways mounting:
-  // Physical X axis -> Game Y axis (inverted)
-  // Physical Y axis -> Game X axis
-  int correctedX = rawY;
-  int correctedY = 4095 - rawX; // Invert
-  
-  // Only send if significantly different from center (deadzone filter)
-  int dx = abs(correctedX - JOYSTICK_CENTER);
-  int dy = abs(correctedY - JOYSTICK_CENTER);
-  
-  if (dx > JOYSTICK_DEADZONE || dy > JOYSTICK_DEADZONE) {
-    joyX = correctedX;
-    joyY = correctedY;
+  // Exponential moving average filter to eliminate ADC jitter
+  filteredRawX = filteredRawX * 0.75f + (float)rawX * 0.25f;
+  filteredRawY = filteredRawY * 0.75f + (float)rawY * 0.25f;
+
+  // Deviations from auto-calibrated neutral centers:
+  // KY-023 mounted sideways with right side facing UP (rotated 90° CCW):
+  // - Physical vertical (UP/DOWN) is on JOY_X_PIN (GPIO 34).
+  //   Pushing UP moves toward module right side (rawX increases -> devV > 0).
+  //   Game UP requires Y < 2048.
+  //   Pushing DOWN moves toward module left side (rawX decreases -> devV < 0).
+  //   Game DOWN requires Y > 2048.
+  // - Physical horizontal (LEFT/RIGHT) is on JOY_Y_PIN (GPIO 35).
+  //   Pushing RIGHT moves toward module bottom/pins (rawY decreases -> devH < 0).
+  //   Game RIGHT requires X > 2048.
+  //   Pushing LEFT moves toward module top (rawY increases -> devH > 0).
+  //   Game LEFT requires X < 2048.
+  float devV = filteredRawX - (float)centerRawX;
+  float devH = filteredRawY - (float)centerRawY;
+
+  bool inDeadzone = (abs(devV) < JOYSTICK_DEADZONE) && (abs(devH) < JOYSTICK_DEADZONE);
+
+  if (!inDeadzone) {
+    int outX = JOYSTICK_CENTER;
+    int outY = JOYSTICK_CENTER;
+    float maxRange = (float)(JOYSTICK_CENTER - JOYSTICK_DEADZONE);
+
+    // Compute outX from devH:
+    if (abs(devH) > JOYSTICK_DEADZONE) {
+      float magH = abs(devH) - JOYSTICK_DEADZONE;
+      float normH = (magH / maxRange) * JOYSTICK_CENTER;
+      if (normH > JOYSTICK_CENTER) normH = JOYSTICK_CENTER;
+      // devH > 0 is physical LEFT (outX < 2048), devH < 0 is physical RIGHT (outX > 2048)
+      outX = (devH > 0) ? (JOYSTICK_CENTER - (int)normH) : (JOYSTICK_CENTER + (int)normH);
+    }
+
+    // Compute outY from devV:
+    if (abs(devV) > JOYSTICK_DEADZONE) {
+      float magV = abs(devV) - JOYSTICK_DEADZONE;
+      float normV = (magV / maxRange) * JOYSTICK_CENTER;
+      if (normV > JOYSTICK_CENTER) normV = JOYSTICK_CENTER;
+      // devV > 0 is physical UP (outY < 2048), devV < 0 is physical DOWN (outY > 2048)
+      outY = (devV > 0) ? (JOYSTICK_CENTER - (int)normV) : (JOYSTICK_CENTER + (int)normV);
+    }
+
+    outX = constrain(outX, 0, 4095);
+    outY = constrain(outY, 0, 4095);
+
+    joyX = outX;
+    joyY = outY;
+    joystickAtCenter = false;
     sendJoystickEvent(joyX, joyY);
     lastJoystickSend = now;
-  } else if (joyX != JOYSTICK_CENTER || joyY != JOYSTICK_CENTER) {
-    // Send center position once when returning to center
+  } else if (!joystickAtCenter) {
+    // Send center position once when returning to center deadzone
     joyX = JOYSTICK_CENTER;
     joyY = JOYSTICK_CENTER;
-    sendJoystickEvent(joyX, joyY);
+    joystickAtCenter = true;
+    sendJoystickEvent(JOYSTICK_CENTER, JOYSTICK_CENTER);
     lastJoystickSend = now;
   }
 }
@@ -548,7 +618,7 @@ void updateDisplay(unsigned long now) {
   tft.setTextSize(1);
   tft.setTextColor(0x7BEF);
   tft.setCursor(4, 98);
-  tft.print("SEL=Interact BACK=Menu");
+  tft.print("SEL=Interact BACK=Cancel");
   tft.setCursor(4, 110);
   tft.print("MAP=WorldMap JRN=Notes");
   

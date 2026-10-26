@@ -176,8 +176,24 @@ export class InputManager {
   public injectControllerEvent(event: ControllerEvent): void {
     switch (event.type) {
       case 'joystick': {
-        const x = typeof event.x === 'number' ? event.x : 0;
-        const y = typeof event.y === 'number' ? event.y : 0;
+        let x = typeof event.x === 'number' ? event.x : 0;
+        let y = typeof event.y === 'number' ? event.y : 0;
+
+        // If raw ADC values (0-4095 from ESP32)
+        if (Math.abs(x) > 1.5 || Math.abs(y) > 1.5) {
+          const center = 2048;
+          const deadzone = 250;
+          const maxRange = 2048 - deadzone;
+
+          const rawDevX = x - center;
+          const rawDevY = y - center;
+
+          x = Math.abs(rawDevX) > deadzone ? (rawDevX - Math.sign(rawDevX) * deadzone) / maxRange : 0;
+          y = Math.abs(rawDevY) > deadzone ? (rawDevY - Math.sign(rawDevY) * deadzone) / maxRange : 0;
+          x = Math.max(-1, Math.min(1, x));
+          y = Math.max(-1, Math.min(1, y));
+        }
+
         this.controllerMovement = { x, y };
         break;
       }
@@ -186,7 +202,7 @@ export class InputManager {
         const name = (event.name || '').toLowerCase();
         if (['interact', 'a', 'button_a', 'e', 'enter', 'select'].includes(name)) {
           this.interactPressed = true;
-        } else if (['pause', 'start', 'button_start', 'menu', 'escape'].includes(name)) {
+        } else if (['pause', 'start', 'button_start', 'menu', 'escape', 'joy_btn', 'joy_sw'].includes(name)) {
           this.pausePressed = true;
         } else if (name === 'up') {
           this.controllerMovement.y = -1;
