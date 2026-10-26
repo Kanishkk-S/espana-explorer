@@ -1,36 +1,3 @@
-/*
- * ============================================================
- * ESPAÑA EXPLORER — ESP32 Controller Firmware
- * ============================================================
- * 
- * Hardware:
- *   - ESP32 development board
- *   - 1.8" SPI TFT (ST7735)
- *   - RC522 RFID reader
- *   - MPU6050 accelerometer/gyroscope
- *   - KY-023 joystick
- *   - 4 buttons: SELECT, BACK, MAP, JOURNAL
- *   - 2 LEDs: Green, Red
- *   - Buzzer
- * 
- * Communication: USB Serial at 115200 baud
- * Protocol: Newline-delimited JSON
- * 
- * Pin Mapping:
- *   TFT:       CS=5, DC=27, RST=4, SCK=18, MOSI=23
- *   RC522:     SS=16, RST=17, SCK=18, MOSI=23, MISO=19
- *   MPU6050:   SDA=21, SCL=22
- *   Joystick:  X=34, Y=35, SW=33
- *   Buttons:   SELECT=25, BACK=26, MAP=14, JOURNAL=32
- *   LEDs:      GREEN=13, RED=15
- *   Buzzer:    GPIO=2
- * 
- * NOTE: Joystick is mounted sideways on breadboard.
- *       Axis mapping is corrected in this firmware.
- * NOTE: USB serial communication must be tested on actual hardware.
- * ============================================================
- */
-
 #include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
@@ -594,12 +561,14 @@ void updateDisplay(unsigned long now) {
 
 void playTone(int frequency, int duration) {
   if (frequency <= 0 || duration <= 0) return;
-  
-  // Use ledcWrite for tone generation on ESP32
-  ledcSetup(0, frequency, 8);
-  ledcAttachPin(BUZZER_PIN, 0);
-  ledcWrite(0, 128);
+
+  // Arduino-ESP32 core 3.x LEDC API
+  if (!ledcAttach(BUZZER_PIN, frequency, 8)) {
+    return;
+  }
+
+  ledcWrite(BUZZER_PIN, 128);
   delay(duration);
-  ledcWrite(0, 0);
-  ledcDetachPin(BUZZER_PIN);
+  ledcWrite(BUZZER_PIN, 0);
+  ledcDetach(BUZZER_PIN);
 }
