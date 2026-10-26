@@ -114,6 +114,10 @@ unsigned long lastSerialReceive = 0;
 // Status
 String statusLine1 = "ESPANA EXPLORER";
 String statusLine2 = "Controller Ready";
+String statusLocation = "Plaza Llegada";
+String statusQuest = "Forgotten Atlas";
+String statusObjective = "Explore Plaza";
+String statusClue = "SEL: Action";
 int displayPage = 0;
 
 // LED states
@@ -322,8 +326,9 @@ void readJoystick(unsigned long now) {
       float magH = abs(devH) - JOYSTICK_DEADZONE;
       float normH = (magH / maxRange) * JOYSTICK_CENTER;
       if (normH > JOYSTICK_CENTER) normH = JOYSTICK_CENTER;
-      // devH > 0 is physical LEFT (outX < 2048), devH < 0 is physical RIGHT (outX > 2048)
-      outX = (devH > 0) ? (JOYSTICK_CENTER - (int)normH) : (JOYSTICK_CENTER + (int)normH);
+      // Invert horizontal axis to correct reversed left/right direction:
+      // devH > 0 is physical LEFT -> outX < 2048, devH < 0 is physical RIGHT -> outX > 2048
+      outX = (devH > 0) ? (JOYSTICK_CENTER + (int)normH) : (JOYSTICK_CENTER - (int)normH);
     }
 
     // Compute outY from devV:
@@ -354,47 +359,33 @@ void readJoystick(unsigned long now) {
 }
 
 // =========================
-// ACCELEROMETER (MPU6050)
+// ACCELEROMETER (MPU6050) - OPTIONAL PASSIVE MONITORING
 // =========================
+
+bool mpuPresent = false;
 
 void initMPU6050() {
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(0x6B); // PWR_MGMT_1
   Wire.write(0);    // Wake up
-  Wire.endTransmission(true);
+  byte err = Wire.endTransmission(true);
+  if (err != 0) {
+    mpuPresent = false;
+    return;
+  }
   
   // Set accelerometer range to ±8g
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(0x1C); // ACCEL_CONFIG
   Wire.write(0x10); // ±8g
-  Wire.endTransmission(true);
+  mpuPresent = (Wire.endTransmission(true) == 0);
 }
 
 void readAccelerometer(unsigned long now) {
-  Wire.beginTransmission(MPU_ADDR);
-  Wire.write(0x3B); // ACCEL_XOUT_H
-  Wire.endTransmission(false);
-  Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)6, (uint8_t)true);
-  
-  if (Wire.available() >= 6) {
-    accelX = (Wire.read() << 8) | Wire.read();
-    accelY = (Wire.read() << 8) | Wire.read();
-    accelZ = (Wire.read() << 8) | Wire.read();
-    
-    // Shake detection
-    int totalAccel = abs(accelX) + abs(accelY) + abs(accelZ);
-    
-    if (totalAccel > SHAKE_THRESHOLD && (now - lastShakeTime > SHAKE_COOLDOWN)) {
-      lastShakeTime = now;
-      sendShakeEvent();
-      
-      // Feedback
-      playTone(1200, 50);
-      digitalWrite(LED_RED, HIGH);
-      delay(50);
-      digitalWrite(LED_RED, redLedState ? HIGH : LOW);
-    }
-  }
+  // Gesture and shake actions that triggered game actions have been removed.
+  // The sensor is kept non-blocking and optional without controlling movement or menus.
+  if (!mpuPresent) return;
+  (void)now;
 }
 
 // =========================
@@ -533,6 +524,19 @@ void readSerialCommands() {
       
       updateDisplay(millis());
     }
+    else if (strcmp(type, "companion") == 0) {
+      const char* loc = doc["loc"];
+      const char* quest = doc["quest"];
+      const char* obj = doc["obj"];
+      const char* clue = doc["clue"];
+      
+      if (loc) statusLocation = String(loc);
+      if (quest) statusQuest = String(quest);
+      if (obj) statusObjective = String(obj);
+      if (clue) statusClue = String(clue);
+      
+      updateDisplay(millis());
+    }
   }
 }
 
@@ -574,54 +578,71 @@ void showReadyScreen() {
 }
 
 void updateDisplay(unsigned long now) {
-  // Header bar
-  tft.fillRect(0, 0, 160, 16, 0x18C3); // Dark blue
+  // Header bar (0..14)
+  tft.fillRect(0, 0, 160, 15, 0x18C3); // Dark blue
   tft.setTextSize(1);
   tft.setTextColor(0xFD20); // Gold
   tft.setCursor(4, 4);
   tft.print("ESPANA EXPLORER");
-  
-  // Connection status
-  tft.fillRect(0, 18, 160, 12, ST77XX_BLACK);
-  tft.setCursor(4, 20);
+
+  // Connection & City (16..26)
+  tft.fillRect(0, 16, 160, 11, ST77XX_BLACK);
+  tft.setCursor(4, 18);
   if (browserConnected) {
     tft.setTextColor(0x07E0); // Green
-    tft.print(">> Connected");
+    tft.print(">> Online: ");
+    tft.setTextColor(ST77XX_WHITE);
+    tft.print(statusLocation.substring(0, 14));
   } else {
     tft.setTextColor(0xF800); // Red
-    tft.print("-- Waiting...");
+    tft.print("-- Desconectado --");
   }
-  
-  // Status info
-  tft.fillRect(0, 34, 160, 30, ST77XX_BLACK);
+
+  // Active Quest (28..48)
+  tft.fillRect(0, 28, 160, 22, ST77XX_BLACK);
+  tft.setTextColor(0xFD20); // Gold
+  tft.setCursor(4, 30);
+  tft.print("M: ");
   tft.setTextColor(ST77XX_WHITE);
-  tft.setCursor(4, 36);
-  tft.print(statusLine1.substring(0, 25));
-  tft.setCursor(4, 48);
-  tft.setTextColor(0x7BEF);
-  tft.print(statusLine2.substring(0, 25));
-  
-  // Joystick display
-  tft.fillRect(0, 68, 160, 20, ST77XX_BLACK);
+  tft.print(statusQuest.substring(0, 22));
+
+  tft.setCursor(4, 41);
+  tft.setTextColor(0x07FF); // Cyan
+  tft.print("Obj: ");
+  tft.setTextColor(0xCE59); // Silver/White
+  tft.print(statusObjective.substring(0, 20));
+
+  // Clue / Nearby Target / Action Prompt (51..64)
+  tft.fillRect(0, 51, 160, 14, ST77XX_BLACK);
+  tft.setCursor(4, 53);
   tft.setTextColor(0xAEDC); // Light green
-  tft.setCursor(4, 70);
+  tft.print(">> ");
+  tft.print(statusClue.substring(0, 23));
+
+  // Joystick display (66..76)
+  tft.fillRect(0, 66, 160, 11, ST77XX_BLACK);
+  tft.setTextColor(0x7BEF); // Light gray
+  tft.setCursor(4, 68);
   tft.print("Joy: ");
   tft.print(joyX);
   tft.print(",");
   tft.print(joyY);
-  
-  // Divider
-  tft.drawFastHLine(4, 92, 152, 0x4208); // Dark gray
-  
-  // Button hints
-  tft.fillRect(0, 96, 160, 32, ST77XX_BLACK);
+
+  // Divider (80)
+  tft.drawFastHLine(4, 80, 152, 0x4208); // Dark gray
+
+  // Button hints (84..127)
+  tft.fillRect(0, 83, 160, 44, ST77XX_BLACK);
   tft.setTextSize(1);
+  tft.setTextColor(0xFD20); // Gold
+  tft.setCursor(4, 85);
+  tft.print("SEL: Interact/Avanzar");
   tft.setTextColor(0x7BEF);
-  tft.setCursor(4, 98);
-  tft.print("SEL=Interact BACK=Cancel");
-  tft.setCursor(4, 110);
-  tft.print("MAP=WorldMap JRN=Notes");
-  
+  tft.setCursor(4, 97);
+  tft.print("BACK: Cancelar/Cerrar");
+  tft.setCursor(4, 109);
+  tft.print("MAP: Mapa | JRN: Diario");
+
   lastDisplayUpdate = now;
 }
 

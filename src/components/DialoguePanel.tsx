@@ -5,7 +5,7 @@
 // and large right-side overlapping NPC portrait popping over the top edge
 // ============================================================
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { DialogueNode, DialogueChoice, NPCAppearance } from '@/types/game';
 
 export interface DialoguePanelProps {
@@ -17,6 +17,7 @@ export interface DialoguePanelProps {
   onAccept?: () => void;
   onIgnore?: () => void;
   isQuestOffer?: boolean;
+  filterChoice?: (choice: DialogueChoice) => boolean;
 }
 
 export const DialoguePanel: React.FC<DialoguePanelProps> = ({
@@ -28,13 +29,30 @@ export const DialoguePanel: React.FC<DialoguePanelProps> = ({
   onAccept,
   onIgnore,
   isQuestOffer = false,
+  filterChoice,
 }) => {
   const [displayedText, setDisplayedText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [selectedChoiceIndex, setSelectedChoiceIndex] = useState(0);
   const portraitCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const typewriterTimerRef = useRef<number | null>(null);
 
   const fullText = dialogueNode?.text || '';
+
+  // Filter available choices based on quest/item/flag conditions
+  const availableChoices = React.useMemo(() => {
+    if (!dialogueNode?.choices) return [];
+    if (!filterChoice) return dialogueNode.choices;
+    return dialogueNode.choices.filter(filterChoice);
+  }, [dialogueNode, filterChoice]);
+
+  const hasChoices = availableChoices.length > 0;
+  const showQuestButtons = isQuestOffer || dialogueNode?.effects?.some((e) => e.type === 'start_quest');
+
+  // Reset choice highlight when node changes
+  useEffect(() => {
+    setSelectedChoiceIndex(0);
+  }, [dialogueNode?.id]);
 
   // Typewriter effect
   useEffect(() => {
@@ -73,8 +91,8 @@ export const DialoguePanel: React.FC<DialoguePanelProps> = ({
     };
   }, [dialogueNode, fullText]);
 
-  // Fast forward text if clicked while typing
-  const handleSkipTyping = () => {
+  // Fast forward text if clicked or pressed while typing
+  const handleSkipTyping = useCallback(() => {
     if (isTyping) {
       if (typewriterTimerRef.current !== null) {
         clearInterval(typewriterTimerRef.current);
@@ -82,26 +100,85 @@ export const DialoguePanel: React.FC<DialoguePanelProps> = ({
       }
       setDisplayedText(fullText);
       setIsTyping(false);
-    } else if (!hasChoices && onContinue) {
+    } else if (!hasChoices && !showQuestButtons && onContinue) {
       onContinue();
     }
-  };
+  }, [isTyping, fullText, hasChoices, showQuestButtons, onContinue]);
 
-  // Keyboard shortcut for continue: 'e', 'Enter', or 'Space'
+  // Single unified action execution for SELECT / E / Enter
+  const handleSelectAction = useCallback(() => {
+    if (isTyping) {
+      handleSkipTyping();
+      return;
+    }
+
+    if (hasChoices) {
+      const choice = availableChoices[selectedChoiceIndex] || availableChoices[0];
+      if (choice && onChoice) {
+        onChoice(choice);
+      }
+    } else if (showQuestButtons) {
+      if (selectedChoiceIndex === 0) {
+        onAccept?.();
+      } else {
+        onIgnore?.();
+      }
+    } else if (onContinue) {
+      onContinue();
+    }
+  }, [isTyping, handleSkipTyping, hasChoices, availableChoices, selectedChoiceIndex, onChoice, showQuestButtons, onAccept, onIgnore, onContinue]);
+
+  // Choice navigation helper
+  const handleNavigate = useCallback((delta: number) => {
+    if (hasChoices) {
+      setSelectedChoiceIndex((prev) => {
+        const next = prev + delta;
+        if (next < 0) return availableChoices.length - 1;
+        if (next >= availableChoices.length) return 0;
+        return next;
+      });
+    } else if (showQuestButtons) {
+      setSelectedChoiceIndex((prev) => (prev === 0 ? 1 : 0));
+    }
+  }, [hasChoices, availableChoices.length, showQuestButtons]);
+
+  // Keyboard and controller custom event listeners
   useEffect(() => {
+    if (!dialogueNode) return;
+
+    const onDialogueSelect = () => {
+      handleSelectAction();
+    };
+
+    const onDialogueNav = (e: Event) => {
+      const customEvent = e as CustomEvent<number>;
+      handleNavigate(customEvent.detail || 1);
+    };
+
     const handleKey = (e: KeyboardEvent) => {
-      if (!dialogueNode) return;
-      if (e.key === 'e' || e.key === 'E' || e.key === 'Enter' || e.key === ' ') {
-        if (isTyping) {
-          handleSkipTyping();
-        } else if (!dialogueNode.choices || dialogueNode.choices.length === 0) {
-          if (onContinue) onContinue();
-        }
+      const key = e.key.toLowerCase();
+      if (key === 'e' || key === 'enter' || key === ' ') {
+        e.preventDefault();
+        handleSelectAction();
+      } else if (key === 'arrowup' || key === 'w' || key === 'arrowleft' || key === 'a') {
+        e.preventDefault();
+        handleNavigate(-1);
+      } else if (key === 'arrowdown' || key === 's' || key === 'arrowright' || key === 'd') {
+        e.preventDefault();
+        handleNavigate(1);
       }
     };
+
+    window.addEventListener('dialogue_select', onDialogueSelect);
+    window.addEventListener('dialogue_navigate', onDialogueNav);
     window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [dialogueNode, isTyping, fullText, onContinue]);
+
+    return () => {
+      window.removeEventListener('dialogue_select', onDialogueSelect);
+      window.removeEventListener('dialogue_navigate', onDialogueNav);
+      window.removeEventListener('keydown', handleKey);
+    };
+  }, [dialogueNode, handleSelectAction, handleNavigate]);
 
   // Render Illustrated Overlapping Portrait
   useEffect(() => {
@@ -219,9 +296,6 @@ export const DialoguePanel: React.FC<DialoguePanelProps> = ({
 
   if (!dialogueNode) return null;
 
-  const hasChoices = dialogueNode.choices && dialogueNode.choices.length > 0;
-  const showQuestButtons = isQuestOffer || dialogueNode.effects?.some((e) => e.type === 'start_quest');
-
   // Split text into lines or bullets if multiline
   const lines = displayedText.split('\n').filter((l) => l.trim().length > 0);
 
@@ -332,7 +406,7 @@ export const DialoguePanel: React.FC<DialoguePanelProps> = ({
                   alignItems: 'center',
                   gap: '8px',
                   background: 'linear-gradient(180deg, #facc15 0%, #eab308 100%)',
-                  border: '2.5px solid #713f12',
+                  border: selectedChoiceIndex === 0 ? '3px solid #ffffff' : '2.5px solid #713f12',
                   borderRadius: '10px',
                   padding: '7px 18px',
                   color: '#422006',
@@ -340,8 +414,9 @@ export const DialoguePanel: React.FC<DialoguePanelProps> = ({
                   fontWeight: 900,
                   fontSize: '0.98rem',
                   cursor: 'pointer',
-                  boxShadow: '0 3px 8px rgba(0,0,0,0.4)',
-                  transition: 'transform 0.1s ease',
+                  boxShadow: selectedChoiceIndex === 0 ? '0 0 14px rgba(250, 204, 21, 0.9)' : '0 3px 8px rgba(0,0,0,0.4)',
+                  transform: selectedChoiceIndex === 0 ? 'scale(1.04)' : 'scale(1)',
+                  transition: 'all 0.1s ease',
                 }}
                 onMouseDown={(e) => (e.currentTarget.style.transform = 'scale(0.95)')}
                 onMouseUp={(e) => (e.currentTarget.style.transform = 'scale(1)')}
@@ -356,15 +431,16 @@ export const DialoguePanel: React.FC<DialoguePanelProps> = ({
                   onIgnore?.();
                 }}
                 style={{
-                  background: 'rgba(51, 65, 85, 0.8)',
-                  border: '2px solid rgba(148, 163, 184, 0.4)',
+                  background: selectedChoiceIndex === 1 ? 'rgba(71, 85, 105, 0.95)' : 'rgba(51, 65, 85, 0.8)',
+                  border: selectedChoiceIndex === 1 ? '2.5px solid #ffffff' : '2px solid rgba(148, 163, 184, 0.4)',
                   borderRadius: '10px',
                   padding: '7px 16px',
-                  color: '#94a3b8',
+                  color: selectedChoiceIndex === 1 ? '#ffffff' : '#94a3b8',
                   fontFamily: '"Nunito", sans-serif',
                   fontWeight: 800,
                   fontSize: '0.95rem',
                   cursor: 'pointer',
+                  transform: selectedChoiceIndex === 1 ? 'scale(1.04)' : 'scale(1)',
                   transition: 'color 0.15s ease',
                 }}
                 onMouseEnter={(e) => (e.currentTarget.style.color = '#f1f5f9')}
@@ -378,42 +454,43 @@ export const DialoguePanel: React.FC<DialoguePanelProps> = ({
           {/* Multiple Branching Choices */}
           {hasChoices && (
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              {dialogueNode.choices!.map((choice, i) => (
-                <button
-                  key={i}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onChoice?.(choice);
-                  }}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    background: 'rgba(40, 52, 78, 0.95)',
-                    border: '2px solid #f59e0b',
-                    borderRadius: '8px',
-                    padding: '6px 14px',
-                    color: '#fef08a',
-                    fontFamily: '"Nunito", sans-serif',
-                    fontWeight: 700,
-                    fontSize: '0.88rem',
-                    cursor: 'pointer',
-                    boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
-                    transition: 'all 0.15s ease',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = '#d97706';
-                    e.currentTarget.style.color = '#ffffff';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = 'rgba(40, 52, 78, 0.95)';
-                    e.currentTarget.style.color = '#fef08a';
-                  }}
-                >
-                  <span style={{ color: '#f59e0b' }}>▶</span>
-                  <span>{choice.text}</span>
-                </button>
-              ))}
+              {availableChoices.map((choice, i) => {
+                const isHighlighted = i === selectedChoiceIndex;
+                return (
+                  <button
+                    key={i}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onChoice?.(choice);
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      background: isHighlighted
+                        ? 'linear-gradient(180deg, #d97706 0%, #b45309 100%)'
+                        : 'rgba(40, 52, 78, 0.95)',
+                      border: isHighlighted ? '2.5px solid #fde047' : '2px solid #f59e0b',
+                      borderRadius: '8px',
+                      padding: '6px 14px',
+                      color: isHighlighted ? '#ffffff' : '#fef08a',
+                      fontFamily: '"Nunito", sans-serif',
+                      fontWeight: 700,
+                      fontSize: '0.88rem',
+                      cursor: 'pointer',
+                      boxShadow: isHighlighted
+                        ? '0 0 14px rgba(251, 191, 36, 0.8), 0 3px 8px rgba(0,0,0,0.5)'
+                        : '0 2px 6px rgba(0,0,0,0.4)',
+                      transform: isHighlighted ? 'scale(1.03)' : 'scale(1)',
+                      transition: 'all 0.15s ease',
+                    }}
+                    onMouseEnter={() => setSelectedChoiceIndex(i)}
+                  >
+                    <span style={{ color: isHighlighted ? '#ffffff' : '#f59e0b' }}>▶</span>
+                    <span>{choice.text}</span>
+                  </button>
+                );
+              })}
             </div>
           )}
 
@@ -448,7 +525,7 @@ export const DialoguePanel: React.FC<DialoguePanelProps> = ({
 
           {/* Keyboard hint */}
           <span style={{ color: 'rgba(148, 163, 184, 0.7)', fontSize: '0.74rem', marginLeft: 'auto' }}>
-            Press <strong style={{ color: '#fbbf24' }}>[E]</strong> or click to advance
+            <strong style={{ color: '#fbbf24' }}>[E] / [SELECT]</strong> Avanzar/Confirmar &nbsp;|&nbsp; <strong style={{ color: '#fbbf24' }}>[WASD/↑↓]</strong> Elegir
           </span>
         </div>
       </div>

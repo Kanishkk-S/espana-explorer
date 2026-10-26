@@ -234,6 +234,17 @@ export class ControllerManager {
     return this.send({ type: 'display', line1, line2 });
   }
 
+  // Send companion state to TFT display (location, active quest, objective, clue)
+  async sendCompanionData(data: { loc?: string; quest?: string; obj?: string; clue?: string }): Promise<boolean> {
+    return this.send({
+      type: 'companion',
+      loc: data.loc || '',
+      quest: data.quest || '',
+      obj: data.obj || '',
+      clue: data.clue || '',
+    });
+  }
+
   // Get connection status
   getStatus(): { connected: boolean; port: string | null; mode: ControllerMode } {
     return {

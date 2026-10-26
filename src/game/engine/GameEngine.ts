@@ -496,6 +496,11 @@ export class GameEngine {
       }
       return;
     }
+
+    // 3. Clear feedback if player pressed interact but is not close enough to any entity
+    if (this.callbacks.onNotification) {
+      this.callbacks.onNotification('Acércate más para interactuar con personajes u objetos [E/SELECT]');
+    }
   }
 
   /**

@@ -13,6 +13,8 @@ import {
   CityId,
   DialogueNode,
   DialogueChoice,
+  DialogueCondition,
+  DialogueEffect,
   NPCDefinition,
   InteractableObject,
   AreaExit,
@@ -141,7 +143,14 @@ export const GameScreen: React.FC = () => {
 
       // Handle UI buttons from controller
       if (event.type === 'button') {
-        if (event.name === 'MAP') {
+        if (event.name === 'SELECT') {
+          sound.playClick();
+          if (activeDialogue) {
+            window.dispatchEvent(new CustomEvent('dialogue_select'));
+          } else {
+            engineRef.current?.triggerInteraction();
+          }
+        } else if (event.name === 'MAP') {
           sound.playClick();
           setShowMap((prev) => !prev);
           setShowInventory(false);
@@ -167,6 +176,14 @@ export const GameScreen: React.FC = () => {
         } else if (event.name === 'JOY_BTN' || event.name === 'JOY_SW') {
           sound.playClick();
           setIsPaused((prev) => !prev);
+        }
+      } else if (event.type === 'joystick' && activeDialogue) {
+        if (typeof event.y === 'number') {
+          if (event.y < 1200) {
+            window.dispatchEvent(new CustomEvent('dialogue_navigate', { detail: -1 }));
+          } else if (event.y > 2800) {
+            window.dispatchEvent(new CustomEvent('dialogue_navigate', { detail: 1 }));
+          }
         }
       } else if (event.type === 'rfid' && event.uid) {
         // In login mode, RFID authentication is managed by RfidLoginScreen
@@ -278,9 +295,18 @@ export const GameScreen: React.FC = () => {
           sound.playDialogueChirp();
           setActiveNPC(npc);
           if (npc.dialogueTree && npc.dialogueTree.length > 0) {
-            // Find appropriate dialogue node based on quest progress
-            const initialNode = npc.dialogueTree[0];
+            // Find appropriate dialogue node based on quest progress and conditions
+            let initialNode = npc.dialogueTree[0];
+            for (const node of npc.dialogueTree) {
+              if (node.condition && checkDialogueCondition(node.condition)) {
+                initialNode = node;
+                break;
+              }
+            }
             setActiveDialogue(initialNode);
+            if (initialNode.effects) {
+              applyDialogueEffects(initialNode.effects);
+            }
           }
         },
         onInteractableTrigger: (obj: InteractableObject) => {
@@ -534,7 +560,9 @@ export const GameScreen: React.FC = () => {
 
       // Quick Access Shortcuts
       if (!isPaused && !activeDialogue && !activePuzzle) {
-        if (key === 'i') {
+        if (key === 'e' || key === 'enter') {
+          engineRef.current?.triggerInteraction();
+        } else if (key === 'i') {
           sound.playClick();
           setShowInventory((prev) => !prev);
           setShowJournal(false);
@@ -575,6 +603,30 @@ export const GameScreen: React.FC = () => {
     showMap,
     showControllerModal,
     showSettingsModal,
+  ]);
+
+  // Sync live companion state (location, quest, objective, clue) to physical ESP32 ST7735 TFT
+  useEffect(() => {
+    if (scene !== 'gameplay') return;
+    const controller = controllerRef.current;
+    if (!controller.getStatus().connected) return;
+
+    const activeQ = gameState.quests[trackedQuestId] || Object.values(gameState.quests).find((q) => q.status === 'active');
+    const activeObj = activeQ?.objectives.find((o) => !o.completed);
+
+    controller.sendCompanionData({
+      loc: gameState.player.currentArea || 'Plaza Llegada',
+      quest: activeQ ? activeQ.name : 'Exploracion Libre',
+      obj: activeObj ? activeObj.description : 'Habla con vecinos',
+      clue: nearbyTarget ? `Cerca: ${nearbyTarget}` : (activeDialogue ? 'En conversacion' : 'SEL: Interactuar'),
+    });
+  }, [
+    scene,
+    gameState.player.currentArea,
+    trackedQuestId,
+    gameState.quests,
+    nearbyTarget,
+    activeDialogue,
   ]);
 
   // RFID Login & Session Handlers
@@ -662,40 +714,141 @@ export const GameScreen: React.FC = () => {
     triggerNotification('Progreso reiniciado por completo.', 'info', 'Partida Reiniciada');
   };
 
+  // Dialogue Condition Evaluator
+  const checkDialogueCondition = useCallback((cond?: DialogueCondition): boolean => {
+    if (!cond) return true;
+    const gs = gameStateRef.current;
+    switch (cond.type) {
+      case 'quest_status':
+        if (!cond.questId || !cond.status) return true;
+        return gs.quests[cond.questId]?.status === cond.status;
+      case 'has_item':
+        if (!cond.itemId) return true;
+        return gs.inventory.some((i) => i.id === cond.itemId && i.quantity > 0);
+      case 'flag':
+        if (!cond.flagName) return true;
+        return Boolean(gs.flags[cond.flagName]) === Boolean(cond.value ?? true);
+      case 'level':
+        if (typeof cond.value !== 'number') return true;
+        return gs.player.level >= cond.value;
+      case 'city_unlocked':
+        if (!cond.value) return true;
+        return gs.player.unlockedCities.includes(cond.value as CityId);
+      default:
+        return true;
+    }
+  }, []);
+
+  // Dialogue Effects Executor (starts quests, completes objectives, gives items, updates journal)
+  const applyDialogueEffects = useCallback((effects?: DialogueEffect[]) => {
+    if (!effects || effects.length === 0) return;
+    setGameState((prev) => {
+      let next = { ...prev };
+      for (const eff of effects) {
+        if (eff.type === 'start_quest' && eff.questId) {
+          const q = next.quests[eff.questId];
+          if (q) {
+            next = {
+              ...next,
+              quests: {
+                ...next.quests,
+                [eff.questId]: { ...q, status: 'active' as const },
+              },
+            };
+            triggerNotification(`Nueva Misión: ${q.name || eff.questId}`, 'quest', 'Misión Aceptada');
+            sound.playQuestComplete();
+          }
+        } else if (eff.type === 'complete_quest' && eff.questId) {
+          const q = next.quests[eff.questId];
+          if (q) {
+            const completedObjectives = q.objectives.map((obj) => ({
+              ...obj,
+              completed: true,
+              current: obj.required,
+            }));
+            next = {
+              ...next,
+              quests: {
+                ...next.quests,
+                [eff.questId]: { ...q, status: 'completed' as const, objectives: completedObjectives },
+              },
+              player: {
+                ...next.player,
+                experience: next.player.experience + 150,
+              },
+            };
+            triggerNotification(`¡Misión Completada: ${q.name || eff.questId}!`, 'achievement', '¡Victoria!');
+            sound.playQuestComplete();
+          }
+        } else if (eff.type === 'give_item' && eff.itemId) {
+          const item = createItem(eff.itemId, 1);
+          const existingIdx = next.inventory.findIndex((i) => i.id === item.id);
+          let updatedInv = [...next.inventory];
+          if (existingIdx >= 0) {
+            updatedInv[existingIdx] = {
+              ...updatedInv[existingIdx],
+              quantity: updatedInv[existingIdx].quantity + 1,
+            };
+          } else {
+            updatedInv.push(item);
+          }
+          next = { ...next, inventory: updatedInv };
+          triggerNotification(`Has recibido: ${item.name}`, 'item', 'Objeto Obtenido');
+          sound.playItemPickup();
+        } else if (eff.type === 'remove_item' && eff.itemId) {
+          next = {
+            ...next,
+            inventory: next.inventory.filter((i) => i.id !== eff.itemId),
+          };
+        } else if (eff.type === 'set_flag' && eff.flagName) {
+          next = {
+            ...next,
+            flags: {
+              ...next.flags,
+              [eff.flagName]: eff.flagValue ?? true,
+            },
+          };
+        } else if (eff.type === 'add_journal' && eff.journalEntry) {
+          const already = next.journal.some((j) => j.id === eff.journalEntry!.id);
+          if (!already) {
+            next = {
+              ...next,
+              journal: [...next.journal, eff.journalEntry],
+            };
+            triggerNotification(`Diario: ${eff.journalEntry.title}`, 'info', 'Anotación Guardada');
+          }
+        } else if (eff.type === 'add_experience' && eff.experience) {
+          next = {
+            ...next,
+            player: {
+              ...next.player,
+              experience: next.player.experience + eff.experience,
+            },
+          };
+        }
+      }
+      if (activePlayerRef.current) {
+        saveGame(next, activePlayerRef.current.playerId);
+      }
+      return next;
+    });
+  }, [triggerNotification]);
+
   // Dialogue Branching Handlers
   const handleDialogueChoice = (choice: DialogueChoice) => {
     sound.playClick();
     if (!activeNPC) return;
 
     if (choice.effects) {
-      for (const eff of choice.effects) {
-        if (eff.type === 'start_quest' && eff.questId) {
-          const qId = eff.questId;
-          setGameState((prev) => {
-            const q = prev.quests[qId];
-            if (q && q.status === 'available') {
-              return {
-                ...prev,
-                quests: { ...prev.quests, [qId]: { ...q, status: 'active' as const } },
-              };
-            }
-            return prev;
-          });
-          triggerNotification(`Nueva Misión Iniciada: ${eff.questId}`, 'quest', 'Misión Aceptada');
-        } else if (eff.type === 'give_item' && eff.itemId) {
-          const item = createItem(eff.itemId, 1);
-          setGameState((prev) => ({
-            ...prev,
-            inventory: [...prev.inventory, item],
-          }));
-          triggerNotification(`Has recibido: ${item.name}`, 'item');
-        }
-      }
+      applyDialogueEffects(choice.effects);
     }
 
     const nextNode = activeNPC.dialogueTree.find((n) => n.id === choice.nextId);
     if (nextNode) {
       setActiveDialogue(nextNode);
+      if (nextNode.effects) {
+        applyDialogueEffects(nextNode.effects);
+      }
     } else {
       setActiveDialogue(null);
     }
@@ -712,6 +865,9 @@ export const GameScreen: React.FC = () => {
       const nextNode = activeNPC.dialogueTree.find((n) => n.id === activeDialogue.nextId);
       if (nextNode) {
         setActiveDialogue(nextNode);
+        if (nextNode.effects) {
+          applyDialogueEffects(nextNode.effects);
+        }
         return;
       }
     }
@@ -992,6 +1148,7 @@ export const GameScreen: React.FC = () => {
               dialogueNode={activeDialogue}
               npcName={activeNPC?.name || 'Habitante de la Villa'}
               npcAppearance={activeNPC?.appearance}
+              filterChoice={(choice) => checkDialogueCondition(choice.condition)}
               onChoice={handleDialogueChoice}
               onContinue={handleDialogueContinue}
               onAccept={() => {
